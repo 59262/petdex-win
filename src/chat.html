@@ -1,0 +1,424 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; font-size: 14px; }
+  body {
+    display: flex; flex-direction: column;
+    background: #1a1a20;
+    color: #eee;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+  }
+  .title-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 12px; color: #999; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .title-bar .name { flex: 1; text-align: center; }
+  .title-bar .close-btn { width: 20px; height: 20px; line-height: 20px; text-align: center; background: transparent; color: #888; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+  .title-bar .close-btn:hover { background: rgba(255,255,255,0.1); color: #eee; }
+  .speed-row { display: flex; align-items: center; gap: 4px; }
+  .speed-row label { font-size: 10px; color: #777; white-space: nowrap; }
+  .speed-row input[type=range] { width: 60px; height: 4px; -webkit-appearance: none; appearance: none; background: rgba(255,255,255,0.12); border-radius: 2px; outline: none; cursor: pointer; }
+  .speed-row input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 10px; height: 10px; border-radius: 50%; background: #2f80ed; cursor: pointer; }
+  .speed-row .speed-val { font-size: 10px; color: #aaa; min-width: 24px; text-align: center; }
+  .messages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .messages::-webkit-scrollbar { width: 4px; }
+  .messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+  .msg { max-width: 90%; padding: 8px 12px; border-radius: 8px; line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #2f80ed; color: #fff; }
+  .msg.assistant { align-self: flex-start; background: #2a2a32; color: #eee; }
+  .msg.assistant.streaming { border-left: 2px solid #2f80ed; }
+  .msg.thinking { align-self: flex-start; background: transparent; color: #888; font-style: italic; font-size: 12px; }
+  .input-area { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.08); }
+  .input-area input { flex: 1; background: #2a2a32; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 8px 10px; color: #eee; font-size: 14px; outline: none; }
+  .input-area input:focus { border-color: #2f80ed; }
+  .input-area button { background: #2f80ed; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; }
+  .input-area button:hover { background: #1a6fd4; }
+  .input-area button.mic-btn { background: #2a2a32; border: 1px solid rgba(255,255,255,0.12); padding: 8px 10px; }
+  .input-area button.mic-btn:hover { background: #3a3a42; }
+  .input-area button.mic-btn.recording { background: #e74c3c; border-color: #e74c3c; animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.5); } 50% { box-shadow: 0 0 0 6px rgba(231, 76, 60, 0); } }
+</style>
+</head>
+<body>
+
+<div class="title-bar"><button class="close-btn" id="clearBtn" title="清除对话">🗑</button><span class="name" id="titleBar">Pet Chat</span><div class="speed-row"><label>语速</label><input type="range" id="speedSlider" min="0.5" max="2.0" step="0.1" value="1.0" title="语速"><span class="speed-val" id="speedVal">1.0x</span></div><button class="close-btn" id="closeBtn">&times;</button></div>
+<div class="messages" id="messages"></div>
+<div class="input-area">
+  <input id="userInput" placeholder="输入消息，Enter 发送..." autofocus>
+  <button id="micBtn" class="mic-btn" title="按住说话">🎤</button>
+  <button id="sendBtn">发送</button>
+</div>
+
+<script>
+var messagesEl = document.getElementById('messages');
+var userInput = document.getElementById('userInput');
+var sendBtn = document.getElementById('sendBtn');
+var closeBtn = document.getElementById('closeBtn');
+
+var streamingEl = null;
+var thinkingEl = null;
+
+function scrollBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addMsg(role, text) {
+  var el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.textContent = text;
+  messagesEl.appendChild(el);
+  scrollBottom();
+  return el;
+}
+
+function removeEl(el) {
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+// Set up listeners ONCE
+window.chatAPI.onChunk(function(data) {
+  if (thinkingEl) { removeEl(thinkingEl); thinkingEl = null; }
+  if (streamingEl) { streamingEl.textContent += data; scrollBottom(); }
+});
+
+window.chatAPI.onDone(function() {
+  if (thinkingEl) { removeEl(thinkingEl); thinkingEl = null; }
+  if (streamingEl) { streamingEl.classList.remove('streaming'); streamingEl = null; }
+  userInput.focus();
+});
+
+function send(voiceMode) {
+  var text = userInput.value.trim();
+  if (!text) return;
+  userInput.value = '';
+
+  addMsg('user', text);
+  thinkingEl = addMsg('thinking', 'thinking...');
+  streamingEl = document.createElement('div');
+  streamingEl.className = 'msg assistant streaming';
+  streamingEl.textContent = '';
+  messagesEl.appendChild(streamingEl);
+  scrollBottom();
+
+  window.chatAPI.sendMessage(text, !!voiceMode);
+}
+
+sendBtn.addEventListener('click', function() {
+  if (audioPlaying) {
+    stopAllAudio();
+    sendBtn.textContent = '发送';
+    sendBtn.style.background = '#2f80ed';
+    window.chatAPI.interruptAudio();
+  } else {
+    send(false);
+  }
+});
+closeBtn.addEventListener('click', function() {
+  window.chatAPI.hideChat();
+});
+
+var clearBtn = document.getElementById('clearBtn');
+clearBtn.addEventListener('click', function() {
+  var ok = confirm('确定要清除所有聊天记录吗？');
+  if (ok) {
+    window.chatAPI.clearHistory();
+    messagesEl.innerHTML = '';
+    addMsg('assistant', '对话已清除。');
+  }
+});
+userInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(false); }
+});
+window.addEventListener('focus', function() { userInput.focus(); });
+
+function reloadChat() {
+  // Clear messages
+  messagesEl.innerHTML = '';
+  // Reload pet name
+  window.chatAPI.getPetName().then(function(name) {
+    document.getElementById('titleBar').textContent = name || 'Pet';
+  });
+  // Reload history
+  window.chatAPI.getHistory().then(function(history) {
+    if (history && history.length > 0) {
+      history.forEach(function(msg) {
+        addMsg(msg.role, msg.content);
+      });
+    } else {
+      addMsg('assistant', 'Hello! Type a message to chat!');
+    }
+  });
+  scrollBottom();
+}
+
+// Listen for pet switch events
+window.chatAPI.onReloadHistory(function() {
+  reloadChat();
+});
+
+// Initial load
+reloadChat();
+
+// --- Speech speed control ---
+var speedSlider = document.getElementById('speedSlider');
+var speedVal = document.getElementById('speedVal');
+
+window.chatAPI.getSpeechConfig().then(function(cfg) {
+  var rate = cfg.ttsRate || 1.0;
+  speedSlider.value = rate;
+  speedVal.textContent = rate.toFixed(1) + 'x';
+});
+
+var speedSaveTimer = null;
+speedSlider.addEventListener('input', function() {
+  var rate = parseFloat(speedSlider.value);
+  speedVal.textContent = rate.toFixed(1) + 'x';
+  clearTimeout(speedSaveTimer);
+  speedSaveTimer = setTimeout(function() {
+    window.chatAPI.saveSpeechConfig({ ttsRate: rate });
+  }, 300);
+});
+
+// --- TTS audio playback ---
+var audioQueue = [];
+var audioPlaying = false;
+var currentSource = null;
+var currentCtx = null;
+var ttsVolume = 0.5;
+
+window.chatAPI.onVolumeChange(function(vol) {
+  ttsVolume = vol;
+});
+
+function stopAllAudio() {
+  audioQueue = [];
+  if (currentSource) { try { currentSource.stop(); } catch(e) {}; currentSource = null; }
+  if (currentCtx) { try { currentCtx.close(); } catch(e) {}; currentCtx = null; }
+  audioPlaying = false;
+}
+
+function playNextAudio() {
+  if (audioQueue.length === 0) {
+    audioPlaying = false;
+    sendBtn.textContent = '发送';
+    sendBtn.style.background = '#2f80ed';
+    return;
+  }
+  audioPlaying = true;
+  sendBtn.textContent = '打断';
+  sendBtn.style.background = '#e74c3c';
+  var base64 = audioQueue.shift();
+  try {
+    var binaryStr = atob(base64);
+    var len = binaryStr.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+    currentCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var ctx = currentCtx;
+    ctx.decodeAudioData(bytes.buffer, function(audioBuf) {
+      var gain = ctx.createGain();
+      gain.gain.value = ttsVolume;
+      currentSource = ctx.createBufferSource();
+      currentSource.buffer = audioBuf;
+      currentSource.connect(gain);
+      gain.connect(ctx.destination);
+      currentSource.start(0);
+      currentSource.onended = function() {
+        currentSource = null;
+        ctx.close();
+        currentCtx = null;
+        playNextAudio();
+      };
+    }, function() {
+      ctx.close();
+      currentCtx = null;
+      playNextAudio();
+    });
+  } catch(e) {
+    console.error('[voice] Audio playback error:', e.message);
+    playNextAudio();
+  }
+}
+
+window.chatAPI.onAudio(function(base64) {
+  audioQueue.push(base64);
+  if (!audioPlaying) playNextAudio();
+});
+
+// --- Conversation mode (continuous PCM streaming) ---
+var convActive = false;
+var convAudioCtx = null;
+var convStream = null;
+var convScriptNode = null;
+
+function arrayBufferToBase64(buffer) {
+  var bytes = new Uint8Array(buffer);
+  var binary = '';
+  for (var i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+window.chatAPI.onConvStart(async function() {
+  if (convActive) return;
+  try {
+    convStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    convAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var source = convAudioCtx.createMediaStreamSource(convStream);
+    convScriptNode = convAudioCtx.createScriptProcessor(2048, 1, 1);
+    convScriptNode.onaudioprocess = function(e) {
+      if (!convActive) return;
+      var floatSamples = e.inputBuffer.getChannelData(0);
+      var pcmBuf = new ArrayBuffer(floatSamples.length * 2);
+      var pcmView = new DataView(pcmBuf);
+      for (var i = 0; i < floatSamples.length; i++) {
+        var s = Math.max(-1, Math.min(1, floatSamples[i]));
+        pcmView.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      window.chatAPI.sendAudioChunk(arrayBufferToBase64(pcmBuf));
+    };
+    source.connect(convScriptNode);
+    convScriptNode.connect(convAudioCtx.destination);
+    convActive = true;
+    console.log('[voice] Conversation mode started, rate:', convAudioCtx.sampleRate);
+    addMsg('thinking', '对话模式已开启，开始说话吧...');
+  } catch (err) {
+    console.error('[voice] Conv start error:', err.message);
+    addMsg('assistant', '[对话模式启动失败：麦克风权限]');
+  }
+});
+
+window.chatAPI.onConvStop(function() {
+  convActive = false;
+  if (convScriptNode) { convScriptNode.disconnect(); convScriptNode = null; }
+  if (convStream) { convStream.getTracks().forEach(function(t) { t.stop(); }); convStream = null; }
+  if (convAudioCtx) { convAudioCtx.close(); convAudioCtx = null; }
+  console.log('[voice] Conversation mode stopped');
+  addMsg('thinking', '对话模式已关闭');
+});
+
+window.chatAPI.onConvSentence(function(text) {
+  addMsg('user', text);
+  thinkingEl = addMsg('thinking', 'thinking...');
+  streamingEl = document.createElement('div');
+  streamingEl.className = 'msg assistant streaming';
+  streamingEl.textContent = '';
+  messagesEl.appendChild(streamingEl);
+  scrollBottom();
+});
+
+// --- Voice recording (MediaRecorder push-to-talk) ---
+var micBtn = document.getElementById('micBtn');
+var mediaRecorder = null;
+var mediaStream = null;
+var audioChunks = [];
+var isRecording = false;
+
+micBtn.addEventListener('mousedown', async function(e) {
+  e.preventDefault();
+  if (isRecording) return;
+  isRecording = true;
+  micBtn.classList.add('recording');
+  micBtn.textContent = '⏺';
+  audioChunks = [];
+  userInput.placeholder = '正在录音...';
+
+  try {
+    userInput.placeholder = '麦克风启动中...';
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    var mimeType = 'audio/webm;codecs=opus';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/ogg;codecs=opus';
+    console.log('[voice] MediaRecorder mimeType:', mimeType);
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: mimeType });
+    mediaRecorder.ondataavailable = function(e) {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.onstop = function() {
+      processRecording();
+    };
+    mediaRecorder.start(100);
+    userInput.placeholder = '正在录音...';
+  } catch (err) {
+    console.error('[voice] getUserMedia error:', err.message);
+    stopRecordingUI();
+    userInput.placeholder = '麦克风权限未授予 - 请在 Windows 设置中开启';
+    setTimeout(function() { userInput.placeholder = '输入消息，Enter 发送...'; }, 4000);
+  }
+});
+
+micBtn.addEventListener('mouseup', function(e) {
+  e.preventDefault();
+  if (!isRecording) return;
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+  stopRecordingUI();
+});
+
+micBtn.addEventListener('mouseleave', function(e) {
+  if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+    stopRecordingUI();
+  }
+});
+
+function stopRecordingUI() {
+  isRecording = false;
+  micBtn.classList.remove('recording');
+  micBtn.textContent = '🎤';
+  userInput.placeholder = '输入消息，Enter 发送...';
+}
+
+function processRecording() {
+  if (audioChunks.length === 0) return;
+  var blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+  console.log('[voice] Recording done - size:', blob.size, 'bytes, type:', blob.type);
+  if (blob.size < 500) { console.log('[voice] Too small, ignoring'); return; }
+
+  var reader = new FileReader();
+  reader.onload = function() {
+    // Decode webm to PCM using AudioContext
+    var decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+    decodeCtx.decodeAudioData(reader.result.slice(0), function(audioBuffer) {
+      var sampleRate = audioBuffer.sampleRate;
+      var pcmFloat = audioBuffer.getChannelData(0);
+      var numSamples = pcmFloat.length;
+      console.log('[voice] Decoded - samples:', numSamples, 'rate:', sampleRate, 'duration:', (numSamples / sampleRate).toFixed(1) + 's');
+
+      // Convert Float32 to Int16 PCM
+      var pcmBuf = new ArrayBuffer(numSamples * 2);
+      var pcmView = new DataView(pcmBuf);
+      for (var i = 0; i < numSamples; i++) {
+        var s = Math.max(-1, Math.min(1, pcmFloat[i]));
+        pcmView.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+
+      var pcmData = new Uint8Array(pcmBuf);
+      console.log('[voice] PCM size:', pcmData.length, 'bytes');
+      decodeCtx.close();
+
+      var thinkingEl = addMsg('thinking', '识别中...');
+
+      window.chatAPI.speechToText(pcmData, sampleRate).then(function(text) {
+        removeEl(thinkingEl);
+        console.log('[voice] ASR result:', text);
+        if (text && text.trim()) {
+          userInput.value = text.trim();
+          send(true);
+        }
+      }).catch(function(err) {
+        removeEl(thinkingEl);
+        console.error('[voice] ASR error:', err.message);
+        addMsg('assistant', '[语音识别失败: ' + (err.message || '未知错误') + ']');
+      });
+    }, function(err) {
+      console.error('[voice] Decode error:', err.message);
+      addMsg('assistant', '[音频解码失败]');
+    });
+  };
+  reader.readAsArrayBuffer(blob);
+}
+</script>
+</body>
+</html>

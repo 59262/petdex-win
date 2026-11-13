@@ -1,0 +1,13 @@
+{
+  "llm": {
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "REPLACE_WITH_YOUR_LLM_KEY",
+    "model": "gpt-4o-mini"
+  },
+  "speech": {
+    "provider": "dashscope",
+    "apiKey": "REPLACE_WITH_YOUR_SPEECH_KEY",
+    "ttsVoice": "longxiaochun_v2",
+    "ttsRate": 1.0
+  }
+}

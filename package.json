@@ -1,0 +1,24 @@
+{
+  "name": "petdex-win",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Windows desktop pet for coding agents - compatible with petdex spritesheets",
+  "main": "src/main.js",
+  "bin": {
+    "petdex-win": "./bin/petdex-win.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "up": "node bin/petdex-win.js up",
+    "down": "node bin/petdex-win.js down",
+    "hooks": "node bin/petdex-win.js hooks"
+  },
+  "dependencies": {
+    "electron": "^35.0.0",
+    "ws": "^8.20.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
